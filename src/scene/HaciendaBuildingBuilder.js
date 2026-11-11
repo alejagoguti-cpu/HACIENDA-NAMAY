@@ -532,7 +532,7 @@ export class HaciendaBuildingBuilder {
       lampShade.position.set(s * 1.45, 0.9, -0.9);
       furnGroup.add(lampShade);
 
-      const nightLight = new THREE.PointLight(0xffbe6b, 0.85, 5);
+      const nightLight = new THREE.PointLight(0xffc570, 1.6, 7);
       nightLight.position.set(s * 1.45, 1.0, -0.9);
       furnGroup.add(nightLight);
       this.lightingManager.registerInteriorLight(nightLight, lampShade);
@@ -555,7 +555,7 @@ export class HaciendaBuildingBuilder {
     furnGroup.add(rug);
 
     // Downlight de techo principal de la habitación
-    const ceilingSpot = new THREE.SpotLight(0xfff2dc, 1.4, 9, Math.PI / 3, 0.4, 1.2);
+    const ceilingSpot = new THREE.SpotLight(0xfff2dc, 2.8, 12, Math.PI / 2.8, 0.45, 1.2);
     ceilingSpot.position.set(cx, 3.1, cz);
     ceilingSpot.target.position.set(cx, 0, cz);
     this.scene.add(ceilingSpot);
@@ -716,8 +716,8 @@ export class HaciendaBuildingBuilder {
     for (let a = startRad + 0.15; a < endRad - 0.15; a += 0.2) {
       const lx = 29.5 * Math.sin(a);
       const lz = -29.5 * Math.cos(a);
-      const underwaterLight = new THREE.PointLight(0x30d5c8, 1.5, 8);
-      underwaterLight.position.set(lx, -0.4, lz);
+      const underwaterLight = new THREE.PointLight(0x00f0ff, 2.6, 10);
+      underwaterLight.position.set(lx, -0.2, lz);
       poolGroup.add(underwaterLight);
       this.lightingManager.registerInteriorLight(underwaterLight);
     }

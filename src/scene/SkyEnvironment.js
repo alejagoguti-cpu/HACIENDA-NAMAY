@@ -217,16 +217,16 @@ export class SkyEnvironment {
     sky.scale.setScalar(4500);
     sky.frustumCulled = false;
     const m = sky.material;
-    // Intensidad ajustable (equivalente a la exposición del Sky Atmosphere)
-    m.uniforms.uSkyIntensity = { value: 0.19 };
+    // Intensidad luminosa natural de cielo abierto en cordillera
+    m.uniforms.uSkyIntensity = { value: 1.08 };
     m.fragmentShader = m.fragmentShader
       .replace('uniform vec3 up;', 'uniform vec3 up;\nuniform float uSkyIntensity;')
       .replace('gl_FragColor = vec4( retColor, 1.0 );', 'gl_FragColor = vec4( retColor * uSkyIntensity, 1.0 );');
     const u = m.uniforms;
-    u.turbidity.value = 2.0;      // aire de sabana relativamente limpio
-    u.rayleigh.value = 1.7;
-    u.mieCoefficient.value = 0.0042;
-    u.mieDirectionalG.value = 0.82;
+    u.turbidity.value = 1.6;
+    u.rayleigh.value = 2.2;
+    u.mieCoefficient.value = 0.0035;
+    u.mieDirectionalG.value = 0.84;
     return sky;
   }
 
@@ -254,7 +254,19 @@ export class SkyEnvironment {
 
     this.sunLight.position.copy(dir).multiplyScalar(110);
     this.sunLight.color.copy(sunCol);
-    this.sunLight.intensity = 2.9 * sunI;
+    this.sunLight.intensity = 3.8 * Math.max(sunI, 0.15);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.width = 4096;
+    this.sunLight.shadow.mapSize.height = 4096;
+    this.sunLight.shadow.camera.near = 10;
+    this.sunLight.shadow.camera.far = 260;
+    const d = 52;
+    this.sunLight.shadow.camera.left = -d;
+    this.sunLight.shadow.camera.right = d;
+    this.sunLight.shadow.camera.top = d;
+    this.sunLight.shadow.camera.bottom = -d;
+    this.sunLight.shadow.bias = -0.0003;
+    this.sunLight.shadow.normalBias = 0.035;
 
     const cu = this.cloudMaterial.uniforms;
     cu.uSunDir.value.copy(dir);
