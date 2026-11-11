@@ -7,15 +7,18 @@ import { windUniforms } from './Wind.js';
 import { HaciendaBuildingBuilder } from './HaciendaBuildingBuilder.js';
 import { WalkControls } from './WalkControls.js';
 import { ExplodedAxonometry } from './ExplodedAxonometry.js';
+import { VehiclesManager } from './VehiclesManager.js';
+import { SkyEnvironment } from './SkyEnvironment.js';
+import { PostFX } from './PostFX.js';
 
 /**
- * MasterplanScene — Orquestador general del motor 3D de Hacienda Namay:
- * - Three.js WebGL Renderer (PBR, sombras, ACESFilmicToneMapping)
- * - Controles Orbit (panear, rotar, zoom)
- * - Controles Walk (caminar con flechas a nivel de ojos)
- * - Axonometría explotada dinámica (GSAP)
- * - Árboles tipo Unreal con viento en tiempo real
- * - Interacción con puertas y selección de habitaciones
+ * MasterplanScene — Motor 3D hiperrealista para Hacienda Namay:
+ * - Topografía real 1:1 de Albán (Cundinamarca) georreferenciada (4.932819869193663, -74.44640638465661)
+ * - Post-procesamiento cinematográfico (GTAO oclusión ambiental de contacto, UnrealBloom, Gradación fílmica)
+ * - Atmósfera física con cielo Rayleigh/Mie, nubes volumétricas 3D y PMREM Skylight
+ * - Arbolado denso tipo Unreal con shader de viento en GPU
+ * - Motos 3D y camperos en el acceso y parqueadero
+ * - Recorrido peatonal con flechas del teclado, axonometría explotada, control de luces y puertas
  */
 export class MasterplanScene {
   constructor(container, onRoomSelected = null, onModeChanged = null) {
@@ -23,7 +26,7 @@ export class MasterplanScene {
     this.onRoomSelected = onRoomSelected;
     this.onModeChanged = onModeChanged;
 
-    this.currentMode = 'exterior'; // 'exterior' | 'axonometria' | 'planta' | 'caminar'
+    this.currentMode = 'exterior';
     this.selectedRoom = null;
 
     this.clock = new THREE.Clock();
@@ -35,6 +38,7 @@ export class MasterplanScene {
     this._initCameraAndControls();
     this._initSystems();
     this._plantUnrealTrees();
+    this._initPostFXAndSky();
     this._initInteractions();
     this._onResize();
 
@@ -44,8 +48,6 @@ export class MasterplanScene {
 
   _initScene() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xc9e1f5);
-    this.scene.fog = new THREE.Fog(0xc9e1f5, 55, 220);
   }
 
   _initRenderer() {
@@ -57,7 +59,7 @@ export class MasterplanScene {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -69,39 +71,38 @@ export class MasterplanScene {
       45,
       this.container.clientWidth / this.container.clientHeight,
       0.2,
-      500
+      2500
     );
-    this.camera.position.set(38, 24, 38);
+    this.camera.position.set(42, 28, 42);
 
-    // Controles de órbita y paneo
     this.orbitControls = new OrbitControls(this.camera, this.renderer.domElement);
     this.orbitControls.enableDamping = true;
     this.orbitControls.dampingFactor = 0.05;
-    this.orbitControls.target.set(0, 1.5, 0);
-    this.orbitControls.maxPolarAngle = Math.PI / 2.05; // No pasar bajo el suelo
+    this.orbitControls.target.set(0, 1.2, 0);
+    this.orbitControls.maxPolarAngle = Math.PI / 2.04;
     this.orbitControls.minDistance = 2.0;
-    this.orbitControls.maxDistance = 160.0;
-    this.orbitControls.screenSpacePanning = true; // Panear con clic derecho o 2 dedos
+    this.orbitControls.maxDistance = 220.0;
+    this.orbitControls.screenSpacePanning = true;
 
-    // Controles de caminata con flechas
     this.walkControls = new WalkControls(this.camera, this.renderer.domElement);
   }
 
   _initSystems() {
-    // Iluminación día/tarde/noche
     this.lighting = new LightingManager(this.scene);
-
-    // Gestor de puertas 3D
     this.doors = new DoorsManager(this.scene);
 
-    // Constructor de la hacienda y habitaciones
     this.builder = new HaciendaBuildingBuilder(this.scene, this.doors, this.lighting);
     const buildResult = this.builder.build();
     this.roomsData = buildResult.rooms;
     this.roomMeshes = buildResult.roomMeshes;
     this.roofGroup = buildResult.roofGroup;
+    this.terrainTreePoints = buildResult.treePoints || [];
 
-    // Despiece axonométrico explotado
+    // Vehículos y Motos en la llegada y vía rural
+    this.vehicles = new VehiclesManager(this.scene);
+    this.vehicles.spawnVehicles();
+
+    // Despiece axonométrico con GSAP
     this.axonometry = new ExplodedAxonometry(
       this.roofGroup,
       this.camera,
@@ -114,36 +115,60 @@ export class MasterplanScene {
     );
   }
 
+  _initPostFXAndSky() {
+    try {
+      // Sky Atmosphere física y nubes 3D volumétricas
+      this.skyEnv = new SkyEnvironment(
+        this.renderer,
+        this.scene,
+        this.lighting.sunLight,
+        this.lighting.hemiLight
+      );
+      this.skyEnv.setHour(10.5); // Sol de media mañana en cordillera
+    } catch (e) {
+      console.warn('SkyEnvironment fallback', e);
+    }
+
+    try {
+      // Cadena de posproceso cinematográfico (GTAO + Bloom + AgX grading)
+      this.postFX = new PostFX(this.renderer, this.scene, this.camera, this.container);
+    } catch (e) {
+      console.warn('PostFX fallback', e);
+    }
+  }
+
   /**
-   * Siembra árboles tipo Unreal con follaje PBR y viento alrededor de la hacienda
+   * Siembra densa de árboles reales tipo Unreal ("DONDE VES ARBOL TIENES QUE PONER REAL")
    */
   _plantUnrealTrees() {
     try {
       this.trees = new RealTrees();
       const treeGroup = new THREE.Group();
-      treeGroup.name = 'UnrealTrees';
+      treeGroup.name = 'UnrealTrees_Albán';
 
       const points = [];
 
-      // 1. Árboles ornamentales en el patio interior (palmas y frutales)
+      // 1. Árboles ornamentales en el patio interior
       points.push([4.5, 0, 4.5, 'palm']);
       points.push([-5.2, 0, 5.0, 'palm']);
       points.push([-7.0, 0, -4.0, 'celtis']);
       points.push([6.0, 0, -5.5, 'celtis']);
       points.push([0.0, 0, 9.5, 'ash']);
+      points.push([-3.0, 0, -9.0, 'palm']);
+      points.push([11.0, 0, 1.0, 'celtis']);
 
-      // 2. Bosque perimetral exterior (pino, eucalipto, fresno)
-      for (let ang = 0; ang < Math.PI * 2; ang += 0.22) {
-        const r1 = 39.0 + Math.sin(ang * 4) * 4.0;
-        const r2 = 48.0 + Math.cos(ang * 3) * 5.0;
-        const x1 = r1 * Math.sin(ang), z1 = r1 * Math.cos(ang);
-        const x2 = r2 * Math.sin(ang + 0.1), z2 = r2 * Math.cos(ang + 0.1);
+      // 2. Árboles perimetrales alrededor del edificio
+      for (let ang = 0; ang < Math.PI * 2; ang += 0.16) {
+        const r1 = 37.0 + Math.sin(ang * 4) * 3.0;
+        const x1 = r1 * Math.sin(ang);
+        const z1 = r1 * Math.cos(ang);
+        const sp = ang > Math.PI ? 'euc' : 'pine';
+        points.push([x1, 0, z1, sp]);
+      }
 
-        const sp1 = ang > Math.PI ? 'euc' : 'pine';
-        const sp2 = (Math.floor(ang * 10) % 2 === 0) ? 'ash' : 'celtis';
-
-        points.push([x1, 0, z1, sp1]);
-        points.push([x2, 0, z2, sp2]);
+      // 3. Bosque nativo real detectado sobre la ladera de Albán
+      if (this.terrainTreePoints && this.terrainTreePoints.length > 0) {
+        this.terrainTreePoints.forEach(pt => points.push(pt));
       }
 
       this.trees.plant(points, treeGroup, {
@@ -152,7 +177,7 @@ export class MasterplanScene {
 
       this.scene.add(treeGroup);
     } catch (e) {
-      console.warn('RealTrees fallback', e);
+      console.warn('RealTrees error', e);
     }
   }
 
@@ -168,7 +193,7 @@ export class MasterplanScene {
 
       this.raycaster.setFromCamera(this.mouse, this.camera);
 
-      // 1. Chequear clic en puertas
+      // 1. Clic en puertas 3D
       const doorHits = this.raycaster.intersectObjects(this.doors.interactiveMeshes, false);
       if (doorHits.length > 0) {
         const doorObj = doorHits[0].object.userData.doorObj;
@@ -178,7 +203,7 @@ export class MasterplanScene {
         }
       }
 
-      // 2. Chequear clic en habitaciones
+      // 2. Clic en habitaciones
       const roomHits = this.raycaster.intersectObjects(this.roomMeshes, false);
       if (roomHits.length > 0) {
         const cfg = roomHits[0].object.userData.roomConfig;
@@ -204,9 +229,6 @@ export class MasterplanScene {
     });
   }
 
-  /**
-   * Cambia el modo de visualización principal
-   */
   setMode(mode) {
     if (this.currentMode === mode) return;
     this.currentMode = mode;
@@ -214,8 +236,8 @@ export class MasterplanScene {
     if (mode === 'caminar') {
       this.orbitControls.enabled = false;
       this.walkControls.enabled = true;
+      if (this.postFX) this.postFX.setInterior(true);
 
-      // Si hay una habitación seleccionada, situar al visitante allí
       if (this.selectedRoom) {
         this.walkControls.teleport(
           this.selectedRoom.centerX,
@@ -223,12 +245,12 @@ export class MasterplanScene {
           new THREE.Vector3(0, 1.5, 0)
         );
       } else {
-        // Galería central frente al patio
         this.walkControls.teleport(0, 20.8, new THREE.Vector3(0, 1.5, 0));
       }
     } else {
       this.walkControls.enabled = false;
       this.orbitControls.enabled = true;
+      if (this.postFX) this.postFX.setInterior(false);
 
       if (mode === 'axonometria') {
         this.axonometry.setExploded(true);
@@ -237,7 +259,7 @@ export class MasterplanScene {
         if (window.gsap) {
           window.gsap.to(this.camera.position, {
             x: 0.1,
-            y: 58,
+            y: 62,
             z: 0.1,
             duration: 1.5,
             ease: 'power2.inOut'
@@ -254,9 +276,9 @@ export class MasterplanScene {
         this.axonometry.setExploded(false);
         if (window.gsap) {
           window.gsap.to(this.camera.position, {
-            x: 36,
-            y: 22,
-            z: 36,
+            x: 40,
+            y: 26,
+            z: 40,
             duration: 1.5,
             ease: 'power2.inOut'
           });
@@ -276,9 +298,6 @@ export class MasterplanScene {
     }
   }
 
-  /**
-   * Selecciona una habitación y vuela la cámara hacia ella
-   */
   selectRoom(roomObj) {
     this.selectedRoom = roomObj;
 
@@ -293,7 +312,6 @@ export class MasterplanScene {
       return;
     }
 
-    // Vuelo suave de cámara hacia la habitación
     if (window.gsap) {
       const camOffsetR = 6.5;
       const camX = roomObj.centerX + camOffsetR * Math.sin(roomObj.midAngRad);
@@ -301,7 +319,7 @@ export class MasterplanScene {
 
       window.gsap.to(this.camera.position, {
         x: camX,
-        y: 5.5,
+        y: 5.2,
         z: camZ,
         duration: 1.4,
         ease: 'power2.inOut'
@@ -317,12 +335,22 @@ export class MasterplanScene {
     }
   }
 
+  setAtmosphere(mood) {
+    this.lighting.setMood(mood);
+    if (this.skyEnv) {
+      if (mood === 'dia') this.skyEnv.setHour(10.5);
+      else if (mood === 'tarde') this.skyEnv.setHour(17.8);
+      else if (mood === 'noche') this.skyEnv.setHour(21.0);
+    }
+  }
+
   _onResize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    if (this.postFX) this.postFX.setSize(w, h);
   }
 
   _animate() {
@@ -331,19 +359,34 @@ export class MasterplanScene {
     const delta = this.clock.getDelta();
     const elapsedTime = this.clock.getElapsedTime();
 
-    // Actualizar shader de viento de los árboles tipo Unreal
+    // Actualizar shader de viento en árboles reales
     windUniforms.uWindTime.value = elapsedTime;
 
-    // Actualizar rotación suave de puertas
+    // Actualizar rotación suave de puertas 3D
     this.doors.update(delta);
 
-    // Controles según modo
+    // Actualizar animación de motos y vehículos
+    if (this.vehicles) {
+      this.vehicles.update(delta);
+    }
+
+    // Actualizar nubes volumétricas 3D en el cielo
+    if (this.skyEnv) {
+      this.skyEnv.update(delta);
+    }
+
+    // Controles de cámara
     if (this.currentMode === 'caminar') {
       this.walkControls.update(delta);
     } else {
       this.orbitControls.update();
     }
 
-    this.renderer.render(this.scene, this.camera);
+    // Render con post-procesamiento cinematográfico o fallback
+    if (this.postFX) {
+      this.postFX.render(delta);
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 }

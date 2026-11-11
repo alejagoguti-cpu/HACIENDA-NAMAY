@@ -55,7 +55,7 @@ class App {
         this.scene.setMode(mode);
       },
       onMoodChange: (mood) => {
-        this.scene.lighting.setMood(mood);
+        this.scene.setAtmosphere(mood);
       },
       onToggleLights: () => {
         return this.scene.lighting.toggleLights();

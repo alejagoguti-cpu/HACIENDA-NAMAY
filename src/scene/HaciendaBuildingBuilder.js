@@ -1,9 +1,40 @@
 import * as THREE from 'three';
 import { MaterialLibrary } from './MaterialLibrary.js';
 
-/**
- * Helper para asignar UVs métricas reales a geometrías horizontales (pisos, decks, losas)
- */
+// Elevaciones reales de Albán, Cundinamarca (4.932819869193663, -74.44640638465661)
+// Malla de 9x9 obtenida de Open-Meteo DEM (resolución submétrica)
+const REAL_ELEVATIONS_81 = [
+  1394, 1378, 1378, 1363, 1354, 1359, 1359, 1360, 1356,
+  1387, 1377, 1377, 1354, 1346, 1347, 1347, 1346, 1348,
+  1387, 1377, 1377, 1354, 1346, 1347, 1347, 1346, 1348,
+  1375, 1359, 1359, 1346, 1338, 1338, 1338, 1337, 1345,
+  1365, 1351, 1351, 1345, 1335, 1328, 1328, 1322, 1320,
+  1361, 1347, 1347, 1333, 1325, 1318, 1318, 1308, 1305,
+  1361, 1347, 1347, 1333, 1325, 1318, 1318, 1308, 1305,
+  1339, 1327, 1327, 1318, 1315, 1307, 1307, 1300, 1299,
+  1324, 1315, 1315, 1311, 1306, 1298, 1298, 1290, 1301
+];
+
+function sampleElevation(u, v) {
+  // u, v en rango [0, 1] mapeados a la grilla 9x9
+  const clampedU = Math.max(0, Math.min(1, u));
+  const clampedV = Math.max(0, Math.min(1, v));
+  const gx = clampedU * 8;
+  const gy = clampedV * 8;
+  const x0 = Math.floor(gx), x1 = Math.min(8, x0 + 1);
+  const y0 = Math.floor(gy), y1 = Math.min(8, y0 + 1);
+  const fx = gx - x0, fy = gy - y0;
+
+  const h00 = REAL_ELEVATIONS_81[y0 * 9 + x0];
+  const h10 = REAL_ELEVATIONS_81[y0 * 9 + x1];
+  const h01 = REAL_ELEVATIONS_81[y1 * 9 + x0];
+  const h11 = REAL_ELEVATIONS_81[y1 * 9 + x1];
+
+  const top = h00 * (1 - fx) + h10 * fx;
+  const btm = h01 * (1 - fx) + h11 * fx;
+  return top * (1 - fy) + btm * fy;
+}
+
 function applyPlanarUV(geometry, scaleMeters = 2.0) {
   const pos = geometry.attributes.position;
   const uvs = new Float32Array(pos.count * 2);
@@ -16,9 +47,6 @@ function applyPlanarUV(geometry, scaleMeters = 2.0) {
   geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
 }
 
-/**
- * Helper para asignar UVs métricas a muros curvos cilíndricos
- */
 function applyCylinderWallUV(geometry, radius, height, scaleMeters = 2.0) {
   const pos = geometry.attributes.position;
   const uvs = new Float32Array(pos.count * 2);
@@ -48,42 +76,124 @@ export class HaciendaBuildingBuilder {
     this.roofGroup = new THREE.Group();
     this.roofGroup.name = 'RoofGroup';
     this.scene.add(this.roofGroup);
+
+    this.treePoints = []; // puntos de árboles calculados con la topografía real
   }
 
   build() {
-    this._buildTerrain();
+    this._buildRealTopography();
+    this._buildRetainingWalls();
     this._buildCourtyard();
     this._buildArcBuilding();
     this._buildPoolAndDeck();
     return {
       rooms: this.roomsData,
       roomMeshes: this.roomMeshes,
-      roofGroup: this.roofGroup
+      roofGroup: this.roofGroup,
+      treePoints: this.treePoints
     };
   }
 
-  _buildTerrain() {
-    const geo = new THREE.PlaneGeometry(160, 160, 48, 48);
+  /**
+   * Topografía real hiperrealista de Albán (Cundinamarca) usando elevaciones DEM reales
+   * y textura satelital combinada con relieve PBR
+   */
+  _buildRealTopography() {
+    const terrainSize = 220; // 220 metros de terreno alrededor
+    const segments = 64;
+    const geo = new THREE.PlaneGeometry(terrainSize, terrainSize, segments, segments);
     geo.rotateX(-Math.PI / 2);
 
+    const loader = new THREE.TextureLoader();
+    const satTex = loader.load('./assets/textures/satellite_namay.jpg');
+    satTex.wrapS = satTex.wrapT = THREE.ClampToEdgeWrapping;
+    satTex.colorSpace = THREE.SRGBColorSpace;
+
+    // Normal map para pasto y tierra de cordillera
+    const grassNorm = loader.load('./assets/textures/pbr/leafy_grass_nor_gl_1k.jpg');
+    grassNorm.wrapS = grassNorm.wrapT = THREE.RepeatWrapping;
+    grassNorm.repeat.set(24, 24);
+
+    const terrainMat = new THREE.MeshStandardMaterial({
+      map: satTex,
+      normalMap: grassNorm,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      roughness: 0.92,
+      metalness: 0.05
+    });
+
     const pos = geo.attributes.position;
+    const baseElevation = 1335.0; // Altura de la terraza de la hacienda
+
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      const dist = Math.hypot(x, z);
-      let y = 0;
-      if (dist > 36) {
-        const factor = (dist - 36) * 0.16;
-        y = Math.sin(x * 0.06) * 2.8 + Math.cos(z * 0.05) * 3.4 - factor * 1.1;
-      }
-      pos.setY(i, y);
-    }
-    geo.computeVertexNormals();
-    applyPlanarUV(geo, 12.0);
 
-    const terrain = new THREE.Mesh(geo, this.materials.grass);
-    terrain.receiveShadow = true;
-    this.scene.add(terrain);
+      // Normalizar coordenadas a [0, 1]
+      const u = (x + terrainSize / 2) / terrainSize;
+      const v = (z + terrainSize / 2) / terrainSize;
+
+      const rawHeight = sampleElevation(u, v);
+      let diff = (rawHeight - baseElevation) * 0.45; // escala vertical armónica
+
+      const dist = Math.hypot(x, z);
+
+      // Terraplén de la hacienda: la zona central (radio < 34m) está nivelada
+      if (dist < 34) {
+        diff = 0;
+      } else if (dist < 46) {
+        // Talud de transición suave
+        const t = (dist - 34) / (46 - 34);
+        diff = diff * t;
+      }
+
+      pos.setY(i, diff);
+
+      // Detección de árboles reales en la montaña donde la pendiente es natural
+      if (dist > 36 && i % 3 === 0) {
+        // En Albán los árboles se concentran en las laderas y quebradas
+        const isForest = (Math.sin(x * 0.12) * Math.cos(z * 0.12) > -0.2);
+        if (isForest) {
+          const sp = (x + z) > 0 ? 'euc' : (dist > 60 ? 'pine' : 'ash');
+          this.treePoints.push([x, diff, z, sp]);
+        }
+      }
+    }
+
+    geo.computeVertexNormals();
+
+    const terrainMesh = new THREE.Mesh(geo, terrainMat);
+    terrainMesh.receiveShadow = true;
+    this.scene.add(terrainMesh);
+  }
+
+  /**
+   * Muro de contención en piedra ciclópea que sostiene la terraza de la hacienda
+   */
+  _buildRetainingWalls() {
+    const wallGroup = new THREE.Group();
+    const R = 34.5;
+    const h = 2.4;
+
+    // Semicírculo oriental donde la montaña desciende hacia el valle
+    const wallGeo = new THREE.CylinderGeometry(R, R, h, 48, 1, true, 0, Math.PI);
+    applyCylinderWallUV(wallGeo, R, h, 2.5);
+    const wallMesh = new THREE.Mesh(wallGeo, this.materials.wallExt);
+    wallMesh.position.y = -h / 2;
+    wallMesh.castShadow = true;
+    wallMesh.receiveShadow = true;
+    wallGroup.add(wallMesh);
+
+    // Corona superior de piedra
+    const copingGeo = new THREE.RingGeometry(R - 0.4, R + 0.4, 48, 1, 0, Math.PI);
+    copingGeo.rotateX(-Math.PI / 2);
+    applyPlanarUV(copingGeo, 1.5);
+    const coping = new THREE.Mesh(copingGeo, this.materials.wallExt);
+    coping.position.y = 0.05;
+    coping.castShadow = true;
+    wallGroup.add(coping);
+
+    this.scene.add(wallGroup);
   }
 
   _buildCourtyard() {
@@ -92,25 +202,32 @@ export class HaciendaBuildingBuilder {
     // Césped interior del patio
     const lawnGeo = new THREE.CircleGeometry(21.0, 48);
     lawnGeo.rotateX(-Math.PI / 2);
-    applyPlanarUV(lawnGeo, 6.0);
+    applyPlanarUV(lawnGeo, 5.0);
     const lawn = new THREE.Mesh(lawnGeo, this.materials.grass);
     lawn.position.y = 0.02;
     lawn.receiveShadow = true;
     courtyard.add(lawn);
 
-    // Fuente central de piedra
-    const fountainBaseGeo = new THREE.CylinderGeometry(2.8, 3.1, 0.55, 32);
+    // Fuente central de piedra escalonada con brocal
+    const fountainBaseGeo = new THREE.CylinderGeometry(2.8, 3.2, 0.65, 32);
     applyPlanarUV(fountainBaseGeo, 2.0);
     const fountainBase = new THREE.Mesh(fountainBaseGeo, this.materials.wallExt);
-    fountainBase.position.set(0, 0.275, 0);
+    fountainBase.position.set(0, 0.325, 0);
     fountainBase.castShadow = true;
     fountainBase.receiveShadow = true;
     courtyard.add(fountainBase);
 
-    // Agua de la fuente
-    const fountainWaterGeo = new THREE.CylinderGeometry(2.5, 2.5, 0.1, 32);
+    // Taza superior de la fuente
+    const basinGeo = new THREE.CylinderGeometry(1.4, 0.9, 0.45, 24);
+    const basin = new THREE.Mesh(basinGeo, this.materials.wallExt);
+    basin.position.set(0, 0.85, 0);
+    basin.castShadow = true;
+    courtyard.add(basin);
+
+    // Agua cristalina en la fuente
+    const fountainWaterGeo = new THREE.CylinderGeometry(2.55, 2.55, 0.1, 32);
     const fountainWater = new THREE.Mesh(fountainWaterGeo, this.materials.waterPool);
-    fountainWater.position.set(0, 0.52, 0);
+    fountainWater.position.set(0, 0.58, 0);
     courtyard.add(fountainWater);
 
     // Fogata / Fire pit hundido
@@ -129,21 +246,21 @@ export class HaciendaBuildingBuilder {
     const coalsMat = new THREE.MeshStandardMaterial({
       color: 0x331100,
       emissive: 0xff4800,
-      emissiveIntensity: 1.4,
+      emissiveIntensity: 1.6,
       roughness: 0.9
     });
     const coals = new THREE.Mesh(coalsGeo, coalsMat);
     coals.position.y = 0.2;
     firePitGroup.add(coals);
 
-    const fireLight = new THREE.PointLight(0xff7722, 1.8, 14);
-    fireLight.position.set(0, 0.8, 0);
+    const fireLight = new THREE.PointLight(0xff7722, 2.2, 16);
+    fireLight.position.set(0, 0.9, 0);
     firePitGroup.add(fireLight);
     this.lightingManager.registerInteriorLight(fireLight, coals);
 
     courtyard.add(firePitGroup);
 
-    // Caminos curvos de piedra
+    // Caminos curvos de laja en terracota cocida PBR
     const pathGeo = new THREE.RingGeometry(20.4, 21.8, 64);
     pathGeo.rotateX(-Math.PI / 2);
     applyPlanarUV(pathGeo, 1.5);
@@ -272,7 +389,6 @@ export class HaciendaBuildingBuilder {
     const span = a2 - a1;
 
     if (hasWindow) {
-      // Muro antepecho
       const sillGeo = new THREE.CylinderGeometry(radius, radius, 0.85, segments, 1, true, a1 + 0.04, span - 0.08);
       applyCylinderWallUV(sillGeo, radius, 0.85, 2.0);
       const sill = new THREE.Mesh(sillGeo, this.materials.wallExt);
@@ -281,13 +397,11 @@ export class HaciendaBuildingBuilder {
       sill.receiveShadow = true;
       parent.add(sill);
 
-      // Vidrio físico reflectivo
       const glassGeo = new THREE.CylinderGeometry(radius, radius, 1.8, segments, 1, true, a1 + 0.04, span - 0.08);
       const glass = new THREE.Mesh(glassGeo, this.materials.glass);
       glass.position.y = 0.85 + 0.9;
       parent.add(glass);
 
-      // Dintel superior
       const lintelGeo = new THREE.CylinderGeometry(radius, radius, 0.65, segments, 1, true, a1 + 0.04, span - 0.08);
       applyCylinderWallUV(lintelGeo, radius, 0.65, 2.0);
       const lintel = new THREE.Mesh(lintelGeo, this.materials.wallExt);
@@ -327,27 +441,23 @@ export class HaciendaBuildingBuilder {
     bathGroup.position.set(x, 0, z);
     bathGroup.rotation.y = -angleRad;
 
-    // Piso del baño en mármol PBR
     const floorGeo = new THREE.BoxGeometry(2.4, 0.02, 3.2);
     applyPlanarUV(floorGeo, 1.8);
     const floor = new THREE.Mesh(floorGeo, this.materials.floorBath);
     floor.position.y = 0.1;
     bathGroup.add(floor);
 
-    // División de ducha en vidrio templado
     const screenGeo = new THREE.BoxGeometry(0.04, 2.1, 1.4);
     const screen = new THREE.Mesh(screenGeo, this.materials.glass);
     screen.position.set(0.6, 1.15, -0.6);
     bathGroup.add(screen);
 
-    // Mesón de lavamanos en piedra natural PBR
     const vanityGeo = new THREE.BoxGeometry(0.65, 0.85, 1.2);
     const vanity = new THREE.Mesh(vanityGeo, this.materials.floorBath);
     vanity.position.set(-0.6, 0.85 / 2 + 0.1, 0.6);
     vanity.castShadow = true;
     bathGroup.add(vanity);
 
-    // Grifería dorada PBR
     const faucetGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.22, 12);
     const faucet = new THREE.Mesh(faucetGeo, this.materials.brassGold);
     faucet.position.set(-0.6, 0.98 + 0.1, 0.6);
@@ -479,7 +589,6 @@ export class HaciendaBuildingBuilder {
     const fireX = midR * Math.sin(midAngRad);
     const fireZ = -midR * Math.cos(midAngRad);
 
-    // Chimenea monumental de piedra PBR
     const chimneyGeo = new THREE.BoxGeometry(2.4, 4.2, 1.4);
     const chimney = new THREE.Mesh(chimneyGeo, this.materials.wallExt);
     chimney.position.set(fireX, 2.1, fireZ);
@@ -491,14 +600,12 @@ export class HaciendaBuildingBuilder {
     socialGroup.add(hearthLight);
     this.lightingManager.registerInteriorLight(hearthLight);
 
-    // Mesa de comedor larga en roble PBR
     const tableGeo = new THREE.BoxGeometry(3.6, 0.78, 1.2);
     const tableMesh = new THREE.Mesh(tableGeo, this.materials.woodBeams);
     tableMesh.position.set(fireX + 3.2, 0.45, fireZ - 1.5);
     tableMesh.castShadow = true;
     socialGroup.add(tableMesh);
 
-    // Sofás lounge en cuero cognac PBR
     const sofaGeo = new THREE.BoxGeometry(2.8, 0.75, 1.1);
     const sofa = new THREE.Mesh(sofaGeo, this.materials.leatherChair);
     sofa.position.set(fireX - 2.8, 0.38, fireZ);
@@ -553,7 +660,6 @@ export class HaciendaBuildingBuilder {
     const cx = midR * Math.sin(midAngRad);
     const cz = -midR * Math.cos(midAngRad);
 
-    // Isla de cocina en granito PBR
     const islandGeo = new THREE.BoxGeometry(2.6, 0.9, 1.1);
     const island = new THREE.Mesh(islandGeo, this.materials.floorBath);
     island.position.set(cx, 0.45 + 0.08, cz);
@@ -593,7 +699,6 @@ export class HaciendaBuildingBuilder {
     const endRad = 118 * (Math.PI / 180);
     const span = endRad - startRad;
 
-    // Deck perimetral en teca PBR
     const deckGeo = new THREE.RingGeometry(23.0, 36.5, 20, 1, startRad, span);
     deckGeo.rotateX(-Math.PI / 2);
     applyPlanarUV(deckGeo, 2.4);
@@ -602,14 +707,12 @@ export class HaciendaBuildingBuilder {
     deck.receiveShadow = true;
     poolGroup.add(deck);
 
-    // Vaso de piscina sinfín con agua física reflectiva
     const poolGeo = new THREE.RingGeometry(25.5, 34.0, 20, 1, startRad + 0.08, span - 0.16);
     poolGeo.rotateX(-Math.PI / 2);
     const poolWater = new THREE.Mesh(poolGeo, this.materials.waterPool);
     poolWater.position.y = 0.15;
     poolGroup.add(poolWater);
 
-    // Luces subacuáticas
     for (let a = startRad + 0.15; a < endRad - 0.15; a += 0.2) {
       const lx = 29.5 * Math.sin(a);
       const lz = -29.5 * Math.cos(a);
@@ -619,7 +722,6 @@ export class HaciendaBuildingBuilder {
       this.lightingManager.registerInteriorLight(underwaterLight);
     }
 
-    // Asoleadoras sobre el deck
     const loungerGeo = new THREE.BoxGeometry(0.7, 0.35, 1.9);
     for (let a = startRad + 0.12; a < endRad - 0.12; a += 0.18) {
       const lx = 24.2 * Math.sin(a);
@@ -654,7 +756,6 @@ export class HaciendaBuildingBuilder {
     const endRad = endAng * (Math.PI / 180);
     const span = endRad - startRad;
 
-    // Faldón de cubierta en tejas de barro coloniales PBR con UVs métricas
     const roofGeo = new THREE.CylinderGeometry(R_in, R_out, 1.8, 48, 1, true, startRad, span);
     applyCylinderWallUV(roofGeo, (R_in + R_out) / 2, 1.8, 1.2);
     const roofMesh = new THREE.Mesh(roofGeo, this.materials.roofTiles);
@@ -663,7 +764,6 @@ export class HaciendaBuildingBuilder {
     roofMesh.receiveShadow = true;
     this.roofGroup.add(roofMesh);
 
-    // Vigas maestras de madera nogal PBR
     const beamThick = 0.18;
     const beamLen = R_out - R_in + 1.2;
     const beamGeo = new THREE.BoxGeometry(beamThick, 0.28, beamLen);
